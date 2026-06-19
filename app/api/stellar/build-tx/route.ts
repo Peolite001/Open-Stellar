@@ -33,8 +33,8 @@ export async function POST(req: Request) {
       .setTimeout(30)
       .build()
 
-    return NextResponse.json({ xdr: transaction.toXDR() })
+    return NextResponse.json({ ok: true, xdr: transaction.toXDR() })
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 })
+    return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })
   }
 }

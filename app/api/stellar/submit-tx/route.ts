@@ -18,8 +18,8 @@ export async function POST(req: Request) {
     if (!hash) {
       return NextResponse.json({ error: "Transaction submitted but no hash returned" }, { status: 502 })
     }
-    return NextResponse.json({ success: true, hash })
+    return NextResponse.json({ ok: true, hash })
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 })
+    return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })
   }
 }

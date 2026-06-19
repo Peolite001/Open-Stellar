@@ -13,7 +13,7 @@ export async function POST(req: Request) {
     const native = account.balances.find(
       (b: { asset_type: string }) => b.asset_type === "native"
     ) as { balance: string } | undefined
-    return NextResponse.json({ balance: native?.balance || "0", funded: !!native && parseFloat(native.balance) > 0 })
+    return NextResponse.json({ ok: true, balance: native?.balance || "0", funded: !!native && parseFloat(native.balance) > 0 })
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     const isNotFound = msg.includes("404") || msg.includes("Not Found") || msg.includes("does not exist")

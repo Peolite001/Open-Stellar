@@ -1,10 +1,11 @@
 "use client"
 
-import { useState, type ReactNode } from "react"
+import { useState, useEffect, type ReactNode } from "react"
 import {
   Activity,
   Coins,
   Cpu,
+  Database,
   ExternalLink,
   Fingerprint,
   KeyRound,
@@ -15,6 +16,7 @@ import {
 } from "lucide-react"
 import {
   CONTRACTS,
+  commitOnChain,
   mintPassport,
   replaySpentProof,
   verifyOnChain,
@@ -29,26 +31,54 @@ const short = (s = "", n = 14) => (s.length > n ? `${s.slice(0, n)}…` : s)
 
 type PayResult = { authorized: boolean; reason: string; amount: number }
 
+async function getFreighter() {
+  try {
+    const mod = await import("@stellar/freighter-api")
+    return mod
+  } catch {
+    return null
+  }
+}
+
 export function PassportPanel() {
   const [cap, setCap] = useState(50)
   const [payAmount, setPayAmount] = useState(20)
   const [minted, setMinted] = useState<MintedProof | null>(null)
   const [verifyRes, setVerifyRes] = useState<OnChainResult | null>(null)
+  const [commitResult, setCommitResult] = useState<{ ok: boolean; hash?: string; error?: string } | null>(null)
   const [payRes, setPayRes] = useState<PayResult | null>(null)
   const [replay, setReplay] = useState<OnChainResult | null>(null)
   const [proving, setProving] = useState(false)
   const [verifying, setVerifying] = useState(false)
+  const [committing, setCommitting] = useState(false)
   const [paying, setPaying] = useState(false)
   const [replaying, setReplaying] = useState(false)
+  const [freighterKey, setFreighterKey] = useState<string | null>(null)
   const [log, setLog] = useState<string[]>([])
 
   const addLog = (line: string) =>
     setLog((l) => [...l, `${new Date().toLocaleTimeString()}  ${line}`].slice(-40))
 
+  // Detect Freighter on mount so the register step knows if it's available
+  useEffect(() => {
+    getFreighter().then(async (f) => {
+      if (!f) return
+      try {
+        const result = await f.isConnected()
+        if (result) {
+          const pkResult: any = await f.getPublicKey()
+          const pk = typeof pkResult === "string" ? pkResult : pkResult?.publicKey
+          if (pk) setFreighterKey(pk)
+        }
+      } catch { }
+    })
+  }, [])
+
   async function doMint() {
     setProving(true)
     setMinted(null)
     setVerifyRes(null)
+    setCommitResult(null)
     setPayRes(null)
     addLog(`> generating witness + Groth16 proof client-side (cap ${cap} XLM)…`)
     try {
@@ -66,11 +96,71 @@ export function PassportPanel() {
   async function doVerify() {
     if (!minted) return
     setVerifying(true)
-    addLog(`> submitting proof to AgentPassportValidator (BN254 pairing on-chain)…`)
+    setVerifyRes(null)
+    setCommitResult(null)
+    addLog(`> simulating proof against AgentPassportValidator (read-only, no gas)…`)
     const r = await verifyOnChain(minted)
     setVerifyRes(r)
-    addLog(r.ok ? `+ ON-CHAIN VERIFIED · attestation minted (ledger ${r.attestation?.ledger})` : `! rejected: ${r.error}`)
+    addLog(
+      r.ok
+        ? `+ SIMULATION PASSED · proof is valid (ledger ${r.attestation?.ledger}) — register below to persist on-chain`
+        : `! rejected: ${r.error}`,
+    )
     setVerifying(false)
+  }
+
+  async function doCommit() {
+    if (!minted || !verifyRes?.ok) return
+    setCommitting(true)
+    setCommitResult(null)
+
+    let key = freighterKey
+    const freighter = await getFreighter()
+    if (!freighter) {
+      addLog("! Freighter extension not found — install it at freighter.app")
+      setCommitting(false)
+      return
+    }
+
+    if (!key) {
+      try {
+        addLog(`> connecting Freighter…`)
+        const accessResult: any = await freighter.requestAccess()
+        key = typeof accessResult === "string" ? accessResult : accessResult?.address || accessResult?.publicKey
+        if (!key) throw new Error("Could not get address from Freighter")
+        setFreighterKey(key)
+      } catch (e) {
+        addLog(`! Freighter connect failed: ${String((e as Error).message)}`)
+        setCommitting(false)
+        return
+      }
+    }
+
+    addLog(`> committing passport on Soroban (signing with ${key.slice(0, 8)}…)`)
+    try {
+      const signTransaction = async (xdr: string, opts?: object) => {
+        const result: any = await freighter.signTransaction(xdr, {
+          networkPassphrase: "Test SDF Network ; September 2015",
+          ...opts,
+        })
+        if (typeof result === "string") return { signedTxXdr: result }
+        if (result?.signedTxXdr) return { signedTxXdr: result.signedTxXdr }
+        throw new Error("Freighter did not return signed XDR")
+      }
+
+      const r = await commitOnChain(minted, key, signTransaction)
+      setCommitResult(r)
+      addLog(
+        r.ok
+          ? `+ COMMITTED ON-CHAIN · tx ${r.hash ? short(r.hash, 16) : "confirmed"}`
+          : `! commit failed: ${r.error}`,
+      )
+    } catch (e) {
+      const msg = String((e as Error).message)
+      setCommitResult({ ok: false, error: msg })
+      addLog(`! commit error: ${msg}`)
+    }
+    setCommitting(false)
   }
 
   // x402 gate: the proven (hidden) spend cap covers the requested amount.
@@ -95,6 +185,8 @@ export function PassportPanel() {
     addLog(r.ok ? `! unexpectedly accepted` : `+ chain rejected replay — ${r.error}`)
     setReplaying(false)
   }
+
+  const committed = commitResult?.ok === true
 
   return (
     <div className="grid gap-5 xl:grid-cols-[1.1fr_0.9fr]">
@@ -135,7 +227,7 @@ export function PassportPanel() {
           )}
         </Step>
 
-        <Step n="02" title="Verify on-chain" subtitle="BN254 pairing checked by the Soroban validator (read-only sim)">
+        <Step n="02" title="Simulate on-chain verification" subtitle="BN254 pairing checked by the Soroban validator — read-only, no gas">
           <button
             type="button"
             onClick={doVerify}
@@ -143,18 +235,18 @@ export function PassportPanel() {
             className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900 px-4 py-2 text-xs uppercase tracking-[0.2em] text-slate-200 transition hover:border-cyan-400/50 hover:text-cyan-200 disabled:opacity-40"
           >
             {verifying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-            {verifying ? "Verifying…" : "Verify proof on Stellar"}
+            {verifying ? "Simulating…" : "Simulate verification"}
           </button>
           {verifyRes && (
             <div
               className={`mt-4 rounded-2xl border p-4 ${
-                verifyRes.ok ? "border-emerald-500/30 bg-emerald-500/5" : "border-rose-500/30 bg-rose-500/5"
+                verifyRes.ok ? "border-amber-500/30 bg-amber-500/5" : "border-rose-500/30 bg-rose-500/5"
               }`}
             >
               {verifyRes.ok && verifyRes.attestation ? (
                 <div className="grid gap-2 sm:grid-cols-2">
-                  <Fact label="Status" value="ATTESTATION MINTED" tone="text-emerald-300" />
-                  <Fact label="Ledger" value={String(verifyRes.attestation.ledger)} />
+                  <Fact label="Status" value="SIMULATION PASSED" tone="text-amber-300" />
+                  <Fact label="Ledger (sim)" value={String(verifyRes.attestation.ledger)} />
                   <Fact label="Proven cap" value={`${fromStroops(verifyRes.attestation.spend_cap)} XLM`} />
                   <Fact label="Registry root" value={short(verifyRes.attestation.registry_root)} mono />
                 </div>
@@ -164,6 +256,54 @@ export function PassportPanel() {
             </div>
           )}
         </Step>
+
+        {/* Step 02b — only visible after simulation passes */}
+        {verifyRes?.ok && (
+          <Step n="02b" title="Register on-chain" subtitle="Sign with Freighter to persist the passport on Soroban (costs gas)">
+            <div className="flex flex-wrap items-center gap-4">
+              {freighterKey ? (
+                <span className="font-mono text-[11px] text-slate-400">
+                  Signer: {short(freighterKey, 14)}
+                </span>
+              ) : (
+                <span className="font-mono text-[11px] text-slate-500">Freighter not connected</span>
+              )}
+              <button
+                type="button"
+                onClick={doCommit}
+                disabled={committing || committed}
+                className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-xs uppercase tracking-[0.2em] transition disabled:opacity-40 ${
+                  committed
+                    ? "border border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+                    : "border border-emerald-400/40 bg-emerald-400/10 text-emerald-200 hover:border-emerald-300"
+                }`}
+              >
+                {committing ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Database className="h-3.5 w-3.5" />
+                )}
+                {committing ? "Committing…" : committed ? "Committed ✓" : freighterKey ? "Register passport" : "Connect & Register"}
+              </button>
+            </div>
+            {commitResult && (
+              <div
+                className={`mt-4 rounded-2xl border p-4 ${
+                  commitResult.ok ? "border-emerald-500/30 bg-emerald-500/5" : "border-rose-500/30 bg-rose-500/5"
+                }`}
+              >
+                {commitResult.ok ? (
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <Fact label="Status" value="REGISTERED ON-CHAIN" tone="text-emerald-300" />
+                    {commitResult.hash && <Fact label="Tx hash" value={short(commitResult.hash, 16)} mono />}
+                  </div>
+                ) : (
+                  <p className="font-mono text-sm text-rose-300">Failed — {commitResult.error}</p>
+                )}
+              </div>
+            )}
+          </Step>
+        )}
 
         <Step n="03" title="Authorize x402 payment" subtitle="Settles only if amount ≤ proven spend cap">
           <div className="flex flex-wrap items-end gap-4">
@@ -219,7 +359,7 @@ export function PassportPanel() {
 
       {/* RIGHT — credential + console + contracts */}
       <div className="space-y-4">
-        <PassportCardMini cap={minted?.spendCap ?? toStroops(cap)} minted={minted} verified={!!verifyRes?.ok} />
+        <PassportCardMini cap={minted?.spendCap ?? toStroops(cap)} minted={minted} verified={!!verifyRes?.ok} committed={committed} />
 
         <div className="rounded-[28px] border border-slate-800 bg-slate-950/80 p-5">
           <p className="text-[10px] uppercase tracking-[0.32em] text-slate-500">Live console</p>
@@ -228,7 +368,7 @@ export function PassportPanel() {
               <span className="text-slate-600">// waiting for the first proof…</span>
             ) : (
               log.map((l, i) => (
-                <div key={i} className={l.includes("DENIED") || l.startsWith("!") ? "text-rose-300" : l.includes("APPROVED") || l.includes("VERIFIED") ? "text-emerald-300" : ""}>
+                <div key={i} className={l.includes("DENIED") || l.startsWith("!") ? "text-rose-300" : l.includes("APPROVED") || l.includes("VERIFIED") || l.includes("COMMITTED") ? "text-emerald-300" : l.includes("SIMULATION PASSED") ? "text-amber-300" : ""}>
                   {l}
                 </div>
               ))
@@ -306,13 +446,15 @@ function PassportCardMini({
   cap,
   minted,
   verified,
+  committed,
 }: {
   cap: string
   minted: MintedProof | null
   verified: boolean
+  committed: boolean
 }) {
-  const status = verified ? "VERIFIED ON-CHAIN" : minted ? "PROVEN" : "EMPTY"
-  const tone = verified ? "text-emerald-300" : minted ? "text-cyan-300" : "text-slate-500"
+  const status = committed ? "COMMITTED ON-CHAIN" : verified ? "SIMULATION OK" : minted ? "PROVEN" : "EMPTY"
+  const tone = committed ? "text-emerald-300" : verified ? "text-amber-300" : minted ? "text-cyan-300" : "text-slate-500"
   return (
     <div className="rounded-[28px] border border-cyan-500/20 bg-gradient-to-br from-slate-950 to-[#06101c] p-5 shadow-[0_24px_80px_rgba(2,8,23,0.55)]">
       <div className="flex items-center justify-between">

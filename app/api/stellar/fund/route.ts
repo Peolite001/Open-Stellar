@@ -22,8 +22,8 @@ export async function POST(req: Request) {
       (b: { asset_type: string }) => b.asset_type === "native"
     ) as { balance: string } | undefined
 
-    return NextResponse.json({ success: true, balance: native?.balance || "10000" })
+    return NextResponse.json({ ok: true, balance: native?.balance || "10000" })
   } catch (err) {
-    return NextResponse.json({ error: String(err) }, { status: 500 })
+    return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })
   }
 }
