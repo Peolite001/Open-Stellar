@@ -1,39 +1,51 @@
-import { NextResponse } from 'next/server'
+import { createApiRouteLogger } from '@/lib/api-logging'
 import { applyReputationAction, getReputation, listReputations } from '@/lib/reputation/reputation-store'
-import { publishSystemEvent } from '@/lib/events/system-events'
 
 export async function GET(req: Request) {
+  const api = createApiRouteLogger(req, '/api/protocol/reputation')
   const { searchParams } = new URL(req.url)
   const actorId = searchParams.get('actorId')
 
   if (actorId) {
-    return NextResponse.json({ ok: true, reputation: getReputation(actorId) })
+    return await api.json({ ok: true, reputation: getReputation(actorId) }, undefined, {
+      event: 'reputation.read',
+      actorId,
+    })
   }
 
-  return NextResponse.json({ ok: true, reputations: listReputations() })
+  const reputations = listReputations()
+  return await api.json({ ok: true, reputations }, undefined, {
+    event: 'reputation.list',
+    count: reputations.length,
+  })
 }
 
 export async function POST(req: Request) {
+  const api = createApiRouteLogger(req, '/api/protocol/reputation')
+
   try {
     const body = await req.json()
-    const updated = applyReputationAction({
-      actorId: String(body.actorId || 'anonymous'),
-      delta: Number(body.delta || 0),
-      reason: String(body.reason || 'manual-update'),
-      scope: body.scope === 'governance' || body.scope === 'service' ? body.scope : 'tx',
-    })
-    publishSystemEvent({
-      type: 'agent.xp',
-      agentId: updated.actorId,
-      xp: Math.max(0, Number(body.delta || 0)),
-      level: Math.max(1, Math.floor(updated.score / 100)),
-    })
+    const actorId = String(body.actorId || 'anonymous')
+    const delta = Number(body.delta || 0)
+    const reason = String(body.reason || 'manual-update')
+    const scope = body.scope === 'governance' || body.scope === 'service' ? body.scope : 'tx'
+    const updated = applyReputationAction({ actorId, delta, reason, scope })
 
-    return NextResponse.json({ ok: true, reputation: updated })
+    return await api.json({ ok: true, reputation: updated }, undefined, {
+      event: 'reputation.updated',
+      actorId,
+      delta,
+      reason,
+      scope,
+      score: updated.score,
+    })
   } catch (error) {
-    return NextResponse.json(
+    return await api.report(
+      'error',
+      error,
       { ok: false, error: error instanceof Error ? error.message : 'Failed updating reputation' },
-      { status: 500 }
+      { status: 500 },
+      { event: 'reputation.update.failed' },
     )
   }
 }

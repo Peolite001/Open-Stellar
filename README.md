@@ -170,6 +170,9 @@ NEXT_PUBLIC_APP_URL=https://tu-instancia.vercel.app
 
 # Local mock mode (opcional): evita llamadas reales a Stellar, x402 y Passport
 NEXT_PUBLIC_MOCK_MODE=false
+
+# Better Stack / Logtail structured API logs (opcional)
+LOGTAIL_SOURCE_TOKEN=logtail-source-token
 ```
 
 Obtener WalletConnect project ID en [cloud.walletconnect.com](https://cloud.walletconnect.com).
@@ -177,6 +180,19 @@ Obtener WalletConnect project ID en [cloud.walletconnect.com](https://cloud.wall
 ### Local mock mode
 
 Set `NEXT_PUBLIC_MOCK_MODE=true` in `.env.local` to run the local demo without live Stellar testnet, Friendbot, Soroban, or x402 settlement calls. Mock mode returns a fixed funded Stellar balance, mock transaction hashes, mock x402 receipts, and mock passport attestations. A yellow banner appears at the top of the app so operators do not mistake mock responses for real payments.
+
+### Observabilidad de API
+
+Las rutas bajo `/api/protocol/*` y `/api/stellar/*` emiten logs estructurados mediante Better Stack / Logtail cuando `LOGTAIL_SOURCE_TOKEN` está configurado. La app tambien envuelve `next.config.mjs` con `withLogtail` para habilitar la integracion de Next.js. Si la variable no existe, el logger queda en modo no-op para desarrollo local.
+
+Campos base incluidos en cada evento:
+- `route`, `method`, `path`, `status`, `durationMs`
+- `event`, `reason` y contexto de negocio como `paymentRef`, `agentId`, `chain`, `txHash`, `publicKey`
+
+Alertas recomendadas en Better Stack:
+- `event = x402.settle.failed` o `status >= 500`
+- `event = x402.settle.passport_denied` para detectar rechazos del gate ZK
+- `reason = friendbot_failed` o `reason = horizon_lookup_failed` para incidentes Stellar testnet
 
 ---
 

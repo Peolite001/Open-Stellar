@@ -1,15 +1,16 @@
-import { NextResponse } from "next/server"
 import * as StellarSdk from "@stellar/stellar-sdk"
-import { isMockMode } from "@/lib/mock/mock-mode"
-import { mockStellar } from "@/lib/mock/stellar-mock"
+import { createApiRouteLogger } from "@/lib/api-logging"
 
 const HORIZON = "https://horizon-testnet.stellar.org"
 
 export async function POST(req: Request) {
+  const api = createApiRouteLogger(req, "/api/stellar/submit-tx")
+
   try {
     const { signedXdr } = await req.json()
-    if (!signedXdr) return NextResponse.json({ error: "Missing signedXdr" }, { status: 400 })
-    if (isMockMode()) return NextResponse.json(await mockStellar.submitTx())
+    if (!signedXdr) {
+      return await api.json({ error: "Missing signedXdr" }, { status: 400 }, { reason: "missing_signedXdr" })
+    }
 
     const server = new StellarSdk.Horizon.Server(HORIZON)
     const transaction = StellarSdk.TransactionBuilder.fromXDR(
@@ -19,11 +20,22 @@ export async function POST(req: Request) {
     const result = await server.submitTransaction(transaction)
     const hash = (result as { hash?: string }).hash
     if (!hash) {
-      return NextResponse.json({ error: "Transaction submitted but no hash returned" }, { status: 502 })
+      return await api.report(
+        "error",
+        new Error("Transaction submitted but no hash returned"),
+        { error: "Transaction submitted but no hash returned" },
+        { status: 502 },
+        { reason: "missing_tx_hash" },
+      )
     }
-    return NextResponse.json({ ok: true, hash })
+    return await api.json({ ok: true, hash }, undefined, { event: "stellar.submit_tx.completed", txHash: hash })
   } catch (err) {
-    return NextResponse.json({ ok: false, error: err instanceof Error ? err.message : String(err) }, { status: 500 })
+    return await api.report(
+      "error",
+      err,
+      { ok: false, error: err instanceof Error ? err.message : String(err) },
+      { status: 500 },
+      { reason: "stellar_submit_tx_failed" },
+    )
   }
 }
-
