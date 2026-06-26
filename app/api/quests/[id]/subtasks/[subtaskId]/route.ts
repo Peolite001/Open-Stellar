@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server"
 
 import { getQuestById, getSubTasks, updateSubTask } from "@/lib/gamification/quests"
-import { hasCycle } from "@/lib/quests/dependency-graph"
 
 type Context = {
   params: Promise<{ id: string; subtaskId: string }>
@@ -13,6 +12,54 @@ function sanitizeDependsOn(value: unknown): string[] | undefined {
     .filter((dependency): dependency is string => typeof dependency === "string")
     .map((dependency) => dependency.trim())
     .filter((dependency) => dependency.length > 0)
+}
+
+/**
+ * Detects if adding `dependsOn` to `targetId` would create a cycle.
+ * Returns the cycle path (e.g. ["B", "A", "B"]) if a cycle exists, null otherwise.
+ */
+function detectCycle(
+  subtasks: { id: string; dependsOn?: string[] }[],
+  targetId: string,
+  newDependsOn: string[]
+): string[] | null {
+  // Build adjacency map from all subtasks
+  const graph = new Map<string, string[]>()
+  for (const st of subtasks) {
+    graph.set(st.id, st.dependsOn ? [...st.dependsOn] : [])
+  }
+
+  // Apply the proposed update
+  graph.set(targetId, [...newDependsOn])
+
+  // DFS with recursion stack to detect back edge
+  const visited = new Set<string>()
+  const recStack = new Set<string>()
+  const path: string[] = []
+
+  function dfs(node: string): string[] | null {
+    visited.add(node)
+    recStack.add(node)
+    path.push(node)
+
+    const neighbors = graph.get(node) ?? []
+    for (const neighbor of neighbors) {
+      if (!visited.has(neighbor)) {
+        const cycle = dfs(neighbor)
+        if (cycle) return cycle
+      } else if (recStack.has(neighbor)) {
+        // Found cycle — extract the loop from path
+        const cycleStart = path.indexOf(neighbor)
+        return path.slice(cycleStart).concat([neighbor])
+      }
+    }
+
+    path.pop()
+    recStack.delete(node)
+    return null
+  }
+
+  return dfs(targetId)
 }
 
 export async function PATCH(req: Request, context: Context) {
@@ -59,6 +106,18 @@ export async function PATCH(req: Request, context: Context) {
     if (body.dependsOn !== undefined) {
       updates.dependsOn = sanitizeDependsOn(body.dependsOn)
     }
+
+    // --- CYCLE DETECTION ---
+    if (updates.dependsOn !== undefined) {
+      const cycle = detectCycle(subtasks, decodedSubTaskId, updates.dependsOn)
+      if (cycle) {
+        return NextResponse.json(
+          { ok: false, error: "Cycle detected", cycle },
+          { status: 422 }
+        )
+      }
+    }
+    // -----------------------
 
     if (updates.status === "done") {
       const dependsOn = updates.dependsOn ?? subtask.dependsOn ?? []
