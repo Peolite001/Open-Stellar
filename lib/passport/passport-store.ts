@@ -130,15 +130,7 @@ export function runPassportExpiryCheck(nowMs = Date.now()): PassportExpiryCheckR
         const revokedRecord = db.passports.get(record.passportId)!
         newlyRevoked.push(revokedRecord)
 
-        const event: PassportExpiryEvent = {
-          type: "passport.expired",
-          agentId: record.agentId,
-          passportId: record.passportId,
-          at: checkedAt,
-          reason: "expiresAt passed",
-        }
-        pushEvent(event)
-        checkEvents.push(event)
+        // Event tracked via passport.revoked in revokePassportInStore
       }
     }
   }
