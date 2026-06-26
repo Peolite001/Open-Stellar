@@ -1,9 +1,18 @@
 import { NextResponse } from "next/server"
 
 import { getQuestById, getSubTasks, updateSubTask } from "@/lib/gamification/quests"
+import { hasCycle } from "@/lib/quests/dependency-graph"
 
 type Context = {
   params: Promise<{ id: string; subtaskId: string }>
+}
+
+function sanitizeDependsOn(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value
+    .filter((dependency): dependency is string => typeof dependency === "string")
+    .map((dependency) => dependency.trim())
+    .filter((dependency) => dependency.length > 0)
 }
 
 export async function PATCH(req: Request, context: Context) {
@@ -17,8 +26,8 @@ export async function PATCH(req: Request, context: Context) {
   }
 
   const subtasks = getSubTasks(questId)
-  const subtaskExists = subtasks.some((st) => st.id === decodedSubTaskId)
-  if (!subtaskExists) {
+  const subtask = subtasks.find((st) => st.id === decodedSubTaskId)
+  if (!subtask) {
     return NextResponse.json({ ok: false, error: "Subtask not found" }, { status: 404 })
   }
 
@@ -31,6 +40,7 @@ export async function PATCH(req: Request, context: Context) {
     const updates: {
       status?: "pending" | "in_progress" | "done"
       assignedAgentId?: string
+      dependsOn?: string[]
     } = {}
 
     if (body.status !== undefined) {
@@ -44,6 +54,42 @@ export async function PATCH(req: Request, context: Context) {
       updates.assignedAgentId = typeof body.assignedAgentId === "string" && body.assignedAgentId.trim().length > 0
         ? body.assignedAgentId.trim()
         : undefined
+    }
+
+    if (body.dependsOn !== undefined) {
+      updates.dependsOn = sanitizeDependsOn(body.dependsOn)
+    }
+
+    // ── Circular dependency detection ─────────────────────────────────────
+    if (updates.dependsOn !== undefined && updates.dependsOn.length > 0) {
+      for (const toId of updates.dependsOn) {
+        const result = hasCycle(subtasks, decodedSubTaskId, toId)
+        if (result.hasCycle) {
+          return NextResponse.json(
+            {
+              ok: false,
+              error: "circular_dependency",
+              cycle: result.cycle,
+            },
+            { status: 422 },
+          )
+        }
+      }
+    }
+
+    if (updates.status === "done") {
+      const dependsOn = updates.dependsOn ?? subtask.dependsOn ?? []
+      const missing = dependsOn.filter((prerequisiteId) => {
+        const prerequisite = subtasks.find((st) => st.id === prerequisiteId)
+        return !prerequisite || prerequisite.status !== "done"
+      })
+
+      if (missing.length > 0) {
+        return NextResponse.json(
+          { ok: false, reason: "prerequisite_incomplete", missing },
+          { status: 409 }
+        )
+      }
     }
 
     const updatedSubTask = updateSubTask(questId, decodedSubTaskId, updates)
