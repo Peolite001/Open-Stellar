@@ -1,13 +1,11 @@
-import type { AgentPassport, PassportStatus } from "./passport"
+import type { AgentPassport } from "./passport"
 import { getPassportStatus } from "./passport"
-import { publishSystemEvent } from "@/lib/events/system-events"
-import { addNotification } from "@/lib/notifications/notification-store"
 
 export interface PassportExpiryRecord {
   agentId: string
   passportId: string
   expiresAt: string
-  status: PassportStatus
+  status: "ACTIVE" | "EXPIRED" | "REVOKED"
   revokedAt: string | null
   revokedReason: string | null
 }
@@ -59,12 +57,6 @@ function pushEvent(event: PassportExpiryEvent) {
   if (db.events.length > 500) {
     db.events.splice(0, db.events.length - 500)
   }
-  publishSystemEvent({
-    type: "passport.status",
-    agentId: event.agentId,
-    status: event.type === "passport.revoked" ? "revoked" : "expired",
-    occurredAt: event.at,
-  })
 }
 
 /**
@@ -112,17 +104,6 @@ export function revokePassportInStore(
     reason,
   }
   pushEvent(event)
-
-  addNotification({
-    agentId: record.agentId,
-    type: "passport_revoked",
-    title: "Passport expired and revoked",
-    body: `Passport ${passportId.slice(0, 16)}… for agent ${record.agentId} expired and was auto-revoked.`,
-    resourceHref: `/admin?tab=passport&agentId=${record.agentId}`,
-    resourceLabel: "Passport panel",
-    createdAt: event.at,
-    dedupeKey: `passport_revoked:${passportId}:${event.at}`,
-  })
 
   return { wasRevoked: true, record }
 }
