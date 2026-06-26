@@ -1,6 +1,29 @@
-import { describe, it, expect, beforeEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import { PATCH } from "@/app/api/quests/[id]/subtasks/[subtaskId]/route"
-import { addSubTask, getSubTasks } from "@/lib/gamification/quests"
+import { addSubTask, getSubTasks, type Quest } from "@/lib/gamification/quests"
+
+// Mock getQuestById to return a valid quest for our test IDs
+vi.mock("@/lib/gamification/quests", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/gamification/quests")>("@/lib/gamification/quests")
+  return {
+    ...actual,
+    getQuestById: (id: string): Quest | null => {
+      // Return a mock quest for any test quest ID
+      if (id.startsWith("test-quest") || id === "diamond-quest") {
+        return {
+          id,
+          type: "daily",
+          title: "Test Quest",
+          description: "Test",
+          reward: { xp: 10 },
+          progress: 0,
+          status: "in_progress",
+        } as Quest
+      }
+      return actual.getQuestById(id)
+    },
+  }
+})
 
 function resetSubTasks() {
   const globalQuests = globalThis as typeof globalThis & {
@@ -30,7 +53,8 @@ describe("PATCH /api/quests/[id]/subtasks/[subtaskId] — cycle detection", () =
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dependsOn: [b.id] }),
     })
-    await PATCH(req1, createContext(questId, a.id))
+    const res1 = await PATCH(req1, createContext(questId, a.id))
+    expect(res1.status).toBe(200)
 
     // Now try B depends on A — should be rejected
     const req2 = new Request("http://localhost", {
@@ -60,7 +84,8 @@ describe("PATCH /api/quests/[id]/subtasks/[subtaskId] — cycle detection", () =
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dependsOn: [b.id] }),
     })
-    await PATCH(req1, createContext(questId, a.id))
+    const res1 = await PATCH(req1, createContext(questId, a.id))
+    expect(res1.status).toBe(200)
 
     // Set B -> C
     const req2 = new Request("http://localhost", {
@@ -68,7 +93,8 @@ describe("PATCH /api/quests/[id]/subtasks/[subtaskId] — cycle detection", () =
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dependsOn: [c.id] }),
     })
-    await PATCH(req2, createContext(questId, b.id))
+    const res2 = await PATCH(req2, createContext(questId, b.id))
+    expect(res2.status).toBe(200)
 
     // Now try C -> A — should be rejected (3-node cycle)
     const req3 = new Request("http://localhost", {
@@ -133,7 +159,8 @@ describe("PATCH /api/quests/[id]/subtasks/[subtaskId] — cycle detection", () =
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ dependsOn: [b.id] }),
     })
-    await PATCH(req1, createContext(questId, a.id))
+    const res1 = await PATCH(req1, createContext(questId, a.id))
+    expect(res1.status).toBe(200)
 
     // Try B -> A
     const req2 = new Request("http://localhost", {
@@ -143,7 +170,9 @@ describe("PATCH /api/quests/[id]/subtasks/[subtaskId] — cycle detection", () =
     })
     const res = await PATCH(req2, createContext(questId, b.id))
 
+    expect(res.status).toBe(422)
     const body = await res.json()
+    expect(Array.isArray(body.cycle)).toBe(true)
     expect(body.cycle).toContain(a.id)
     expect(body.cycle).toContain(b.id)
     expect(body.cycle.length).toBeGreaterThanOrEqual(2)
