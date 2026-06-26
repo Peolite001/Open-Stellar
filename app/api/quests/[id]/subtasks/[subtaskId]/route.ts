@@ -16,8 +16,8 @@ function sanitizeDependsOn(value: unknown): string[] | undefined {
 
 /**
  * Detects if adding `dependsOn` to `targetId` would create a cycle.
- * Returns the cycle path as an array of unique node IDs in order
- * (e.g. ["A", "B"] for A->B->A, or ["A", "B", "C"] for A->B->C->A).
+ * Returns the cycle path as an array of unique node IDs in order,
+ * rotated so the first element is the earliest node in the subtasks order.
  * Returns null if no cycle exists.
  */
 function detectCycle(
@@ -52,7 +52,25 @@ function detectCycle(
       } else if (recStack.has(neighbor)) {
         // Found cycle — extract the loop from path
         const cycleStart = path.indexOf(neighbor)
-        return path.slice(cycleStart)
+        const cyclePath = path.slice(cycleStart)
+
+        // Rotate cycle so the first element is the one that appears
+        // earliest in the subtasks array (for stable test output)
+        const subtaskOrder = new Map(subtasks.map((st, i) => [st.id, i]))
+        let earliestIndex = 0
+        let earliestOrder = Infinity
+        for (let i = 0; i < cyclePath.length; i++) {
+          const order = subtaskOrder.get(cyclePath[i]) ?? Infinity
+          if (order < earliestOrder) {
+            earliestOrder = order
+            earliestIndex = i
+          }
+        }
+        const rotated = [
+          ...cyclePath.slice(earliestIndex),
+          ...cyclePath.slice(0, earliestIndex),
+        ]
+        return rotated
       }
     }
 
