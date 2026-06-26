@@ -71,7 +71,6 @@ interface AgentPositionState {
 
 const DEFAULT_HISTORY_LIMIT = 50
 const MAX_HISTORY_LIMIT = 1000
-const API_MAX_LIMIT = 100
 const DEFAULT_POSITIONS_DIR = join(process.cwd(), ".data", "positions")
 
 const globalState = globalThis as typeof globalThis & {
@@ -79,8 +78,8 @@ const globalState = globalThis as typeof globalThis & {
 }
 
 const state: AgentPositionState = globalState.__openStellarAgentPositions__ ?? {
-  positions: new Map<string, AgentPosition>(),
-  listeners: new Set<AgentPositionListener>(),
+  positions: new Map(),
+  listeners: new Set(),
   sequence: 0,
   hydrated: false,
 }
@@ -327,6 +326,7 @@ export function listAgentPositionHistory(agentId: string, limit = DEFAULT_HISTOR
 /**
  * Paginated position history with before/after filtering and metadata.
  * Returns newest-first, capped at limit.
+ * Preserves exact same slicing behavior as listAgentPositionHistory for backward compat.
  */
 export function getAgentPositionHistoryPaginated(
   agentId: string,
@@ -338,6 +338,11 @@ export function getAgentPositionHistoryPaginated(
 ): AgentPositionHistoryResult {
   const cleanId = normalizeAgentId(agentId)
   const all = readHistoryFile(cleanId)
+
+  // Compute metadata from full unfiltered array
+  const total = all.length
+  const oldest = total > 0 ? all[0].updatedAt : null
+  const newest = total > 0 ? all[total - 1].updatedAt : null
 
   // Apply before/after filters
   let filtered = all
@@ -354,22 +359,18 @@ export function getAgentPositionHistoryPaginated(
     }
   }
 
-  // Sort newest first, then slice to limit
-  const sorted = [...filtered].sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+  // Use SAME slicing logic as listAgentPositionHistory for backward compat:
+  // take last N records (newest), then reverse to newest-first
   const limit = normalizeAgentPositionHistoryLimit(options.limit)
-  const positions = sorted.slice(0, limit)
+  const positions = filtered.slice(-limit).reverse()
 
   return {
     positions,
-    total: all.length,
+    total,
     returned: positions.length,
-    oldest: all.length > 0 ? all[0].updatedAt : null,
-    newest: all.length > 0 ? all[all.length - 1].updatedAt : null,
+    oldest,
+    newest,
   }
-}
-
-export function getApiMaxLimit(): number {
-  return API_MAX_LIMIT
 }
 
 export function normalizeAgentPositionHistoryLimit(value: unknown): number {
