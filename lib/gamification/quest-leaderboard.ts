@@ -17,6 +17,9 @@ export type LeaderboardPeriod = "daily" | "weekly"
 
 export { invalidateLeaderboardCache, getCacheStatus }
 
+// Re-export for test isolation
+export { resetLeaderboardCache } from "./leaderboard-cache"
+
 function getPeriodWindow(period: LeaderboardPeriod, nowMs = Date.now()): { startMs: number; endMs: number } {
   const now = new Date(nowMs)
   const endMs = nowMs
