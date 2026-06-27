@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server"
-import { listWebhookDeliveryAttempts } from "@/lib/webhooks/delivery-log"
+import { listWebhookDeliveries } from "@/lib/webhooks/delivery-log"
 import { registerWebhookDeliveryListener } from "@/lib/webhooks/delivery"
-import { listWebhooks } from "@/lib/webhooks/store"
+import { getWebhookById } from "@/lib/webhooks/store"
 
 export const dynamic = "force-dynamic"
 export const runtime = "nodejs"
@@ -18,23 +18,33 @@ function parseLimit(req: Request): number {
 
   const parsed = Number.parseInt(limit, 10)
   if (!Number.isFinite(parsed)) return 20
-  return Math.min(Math.max(parsed, 1), 200)
+  return Math.min(Math.max(parsed, 1), 100)
 }
 
 export async function GET(req: Request, context: RouteContext) {
   const { id } = await context.params
   const webhookId = decodeURIComponent(id)
-  const exists = listWebhooks().some((webhook) => webhook.id === webhookId)
 
-  if (!exists) {
+  const webhook = getWebhookById(webhookId)
+  if (!webhook) {
     return NextResponse.json(
       { ok: false, error: "Webhook not found" },
       { status: 404, headers: { "Cache-Control": "no-store" } },
     )
   }
 
+  const url = new URL(req.url)
+  const statusParam = url.searchParams.get("status")
+
+  const status =
+    statusParam === "success" || statusParam === "failure"
+      ? statusParam
+      : undefined
+
+  const limit = parseLimit(req)
+
   return NextResponse.json(
-    { deliveries: listWebhookDeliveryAttempts(webhookId, parseLimit(req)) },
+    { deliveries: listWebhookDeliveries(webhookId, { status, limit }) },
     { headers: { "Cache-Control": "no-store" } },
   )
 }
