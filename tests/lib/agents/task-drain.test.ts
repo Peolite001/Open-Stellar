@@ -71,10 +71,10 @@ describe("task-queue drain and purge", () => {
 
       expect(result).not.toBeNull()
       expect(result!.processed).toBe(100)
-
+      // After draining 100, 50 should remain pending
       const stats = getQueueStats()
-      expect(stats.pendingTasks).toBe(50)
       expect(stats.completedTasks).toBe(100)
+      expect(stats.pendingTasks).toBe(50)
     })
 
     it("uses default maxItems of 50", async () => {
