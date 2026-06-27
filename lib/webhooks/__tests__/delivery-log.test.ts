@@ -105,6 +105,38 @@ describe("getWebhookDeliveryStats", () => {
     const stats = getWebhookDeliveryStats("wh_target")
     expect(stats.totalDeliveries).toBe(0)
   })
+
+  it("computes correct lastSuccessAt when most recent is a failure", () => {
+    const webhookId = "wh_last_fail"
+
+    appendWebhookDeliveryAttempt({
+      webhookId,
+      event: "a",
+      deliveredAt: "2024-01-15T10:00:00.000Z",
+      durationMs: 100,
+      responseStatus: 200,
+      ok: true,
+      retried: false,
+      attempt: 1,
+      status: "success",
+    })
+
+    appendWebhookDeliveryAttempt({
+      webhookId,
+      event: "b",
+      deliveredAt: "2024-01-15T10:05:00.000Z",
+      durationMs: 5000,
+      responseStatus: null,
+      ok: false,
+      retried: false,
+      attempt: 1,
+      status: "failed",
+    })
+
+    const stats = getWebhookDeliveryStats(webhookId)
+    expect(stats.lastDeliveryAt).toBe("2024-01-15T10:05:00.000Z")
+    expect(stats.lastSuccessAt).toBe("2024-01-15T10:00:00.000Z")
+  })
 })
 
 describe("listWebhookDeliveries", () => {
@@ -248,5 +280,10 @@ describe("listWebhookDeliveries", () => {
     const deliveries = listWebhookDeliveries(webhookId, { status: "failure" })
     expect(deliveries[0].error).toBe("HTTP 503")
     expect(deliveries[1].error).toBe("timeout")
+  })
+
+  it("returns empty array for webhook with no attempts", () => {
+    const deliveries = listWebhookDeliveries("wh_empty")
+    expect(deliveries).toEqual([])
   })
 })
