@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { NextRequest } from "next/server"
+import { GET } from "../../[id]/stats/route"
 import {
   appendWebhookDeliveryAttempt,
   resetWebhookDeliveryLogForTests,
@@ -31,9 +33,15 @@ afterEach(() => {
   rmSync(testDir, { recursive: true, force: true })
 })
 
+// Helper to call the route handler directly (no running server needed)
+async function getStats(webhookId: string) {
+  const req = new NextRequest(`http://localhost:3000/api/webhooks/${webhookId}/stats`)
+  return GET(req, { params: Promise.resolve({ id: webhookId }) } as any)
+}
+
 describe("GET /api/webhooks/:id/stats", () => {
   it("returns 404 for unknown webhook", async () => {
-    const res = await fetch("http://localhost:3000/api/webhooks/wh_unknown/stats")
+    const res = await getStats("wh_unknown")
     expect(res.status).toBe(404)
     const body = await res.json()
     expect(body.error).toBe("Webhook not found")
@@ -45,7 +53,7 @@ describe("GET /api/webhooks/:id/stats", () => {
       events: ["agent.status"],
     })
 
-    const res = await fetch(`http://localhost:3000/api/webhooks/${webhook.id}/stats`)
+    const res = await getStats(webhook.id)
     expect(res.status).toBe(200)
     const body = await res.json()
 
@@ -91,7 +99,7 @@ describe("GET /api/webhooks/:id/stats", () => {
       status: "failed",
     })
 
-    const res = await fetch(`http://localhost:3000/api/webhooks/${webhook.id}/stats`)
+    const res = await getStats(webhook.id)
     expect(res.status).toBe(200)
     const body = await res.json()
 
