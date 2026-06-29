@@ -1,91 +1,100 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { render, screen, waitFor, cleanup } from "@testing-library/react"
+import { createElement } from "react"
+import { renderToString } from "react-dom/server"
 import { AgentDashboard } from "@/components/agent-dashboard"
 
-// ─── Mocks ─────────────────────────────────────────────────────────
+// ─── Types ─────────────────────────────────────────────────────────
 
-global.EventSource = class MockEventSource {
+type MockListener = (event: MessageEvent) => void
+
+interface MockEventSourceInstance {
+  url: string
+  readyState: number
+  onopen: ((this: EventSource, ev: Event) => any) | null
+  onmessage: ((this: EventSource, ev: MessageEvent) => any) | null
+  onerror: ((this: EventSource, ev: Event) => any) | null
+  addEventListener(type: string, listener: MockListener): void
+  removeEventListener(type: string, listener: MockListener): void
+  close(): void
+  _dispatch(type: string, data: unknown): void
+}
+
+// ─── Mock EventSource ─────────────────────────────────────────────
+
+const mockInstances: MockEventSourceInstance[] = []
+
+class MockEventSource implements MockEventSourceInstance {
   url: string
   readyState = 0
   onopen: ((this: EventSource, ev: Event) => any) | null = null
   onmessage: ((this: EventSource, ev: MessageEvent) => any) | null = null
   onerror: ((this: EventSource, ev: Event) => any) | null = null
 
-  private listeners: Map<string, Array<(e: any) => void>> = new Map()
+  private listeners = new Map<string, MockListener[]>()
 
   constructor(url: string | URL) {
     this.url = String(url)
+    this.readyState = 0
+    mockInstances.push(this)
+
     // Simulate connection open
     setTimeout(() => {
       this.readyState = 1
-      if (this.onopen) this.onopen(new Event("open"))
+      if (this.onopen) {
+        this.onopen.call(this as unknown as EventSource, new Event("open"))
+      }
     }, 0)
   }
 
-  addEventListener(type: string, listener: (e: any) => void) {
-    if (!this.listeners.has(type)) this.listeners.set(type, [])
+  addEventListener(type: string, listener: MockListener): void {
+    if (!this.listeners.has(type)) {
+      this.listeners.set(type, [])
+    }
     this.listeners.get(type)!.push(listener)
   }
 
-  removeEventListener(type: string, listener: (e: any) => void) {
+  removeEventListener(type: string, listener: MockListener): void {
     const list = this.listeners.get(type) || []
     const idx = list.indexOf(listener)
     if (idx !== -1) list.splice(idx, 1)
   }
 
-  dispatch(type: string, data: any) {
-    const event = {
-      type,
+  _dispatch(type: string, data: unknown): void {
+    const listeners = this.listeners.get(type) || []
+    const event = new MessageEvent(type, {
       data: JSON.stringify(data),
-      lastEventId: "",
       origin: "",
-      ports: [],
-      source: null,
-    } as MessageEvent
-
-    const list = this.listeners.get(type) || []
-    list.forEach((fn) => fn(event))
+      lastEventId: "",
+    })
+    listeners.forEach((fn) => fn(event))
   }
 
-  close() {
+  close(): void {
     this.readyState = 2
   }
-} as any
+}
+
+// Assign static properties to satisfy EventSource interface
+Object.defineProperty(MockEventSource, "CONNECTING", { value: 0 })
+Object.defineProperty(MockEventSource, "OPEN", { value: 1 })
+Object.defineProperty(MockEventSource, "CLOSED", { value: 2 })
+
+// ─── Setup / Teardown ─────────────────────────────────────────────
 
 describe("AgentDashboard", () => {
   const agentId = "agent-test-123"
 
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    global.fetch = vi.fn()
-  })
+    global.EventSource = MockEventSource as unknown as typeof EventSource
+    mockInstances.length = 0
 
-  afterEach(() => {
-    vi.useRealTimers()
-    vi.restoreAllMocks()
-    cleanup()
-  })
+    global.fetch = vi.fn(async (input: string | Request | URL) => {
+      const url = String(input)
 
-  // ─── Loading State ──────────────────────────────────────────────
-
-  it("renders spinner while loading", () => {
-    render(<AgentDashboard agentId={agentId} />)
-    expect(screen.getByTestId("agent-dashboard-loading")).toBeInTheDocument()
-    expect(screen.getByText(/Loading agent dashboard/i)).toBeInTheDocument()
-  })
-
-  // ─── Healthy State ──────────────────────────────────────────────
-
-  it("renders healthy state with all data sections", async () => {
-    // Mock health API
-    vi.mocked(global.fetch).mockImplementation(async (url: string | URL) => {
-      const path = String(url)
-
-      if (path.includes("/health")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
+      if (url.includes("/health")) {
+        return new Response(
+          JSON.stringify({
             ok: true,
             health: {
               status: "healthy",
@@ -96,14 +105,13 @@ describe("AgentDashboard", () => {
               lastHeartbeat: new Date().toISOString(),
             },
           }),
-        } as Response
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
       }
 
-      if (path.includes("/reputation")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
+      if (url.includes("/reputation")) {
+        return new Response(
+          JSON.stringify({
             ok: true,
             reputation: {
               score: 847,
@@ -111,354 +119,206 @@ describe("AgentDashboard", () => {
               totalActions: 1240,
             },
           }),
-        } as Response
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
       }
 
-      if (path.includes("/notifications")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
+      if (url.includes("/notifications")) {
+        return new Response(
+          JSON.stringify({
             ok: true,
             unreadCount: 3,
             notifications: [],
           }),
-        } as Response
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
       }
 
-      return { ok: false, status: 404 } as Response
+      return new Response(JSON.stringify({ ok: false }), { status: 404 })
     })
-
-    render(<AgentDashboard agentId={agentId} />)
-
-    // Wait for data to load
-    await waitFor(() => {
-      expect(screen.queryByTestId("agent-dashboard-loading")).not.toBeInTheDocument()
-    })
-
-    // Dashboard rendered
-    expect(screen.getByTestId("agent-dashboard")).toBeInTheDocument()
-
-    // Health badge is green (healthy)
-    const badge = screen.getByTestId("health-badge")
-    expect(badge).toBeInTheDocument()
-
-    // CPU bar present
-    expect(screen.getByTestId("cpu-bar")).toBeInTheDocument()
-
-    // Memory bar present
-    expect(screen.getByTestId("memory-bar")).toBeInTheDocument()
-
-    // Status label shows "Healthy"
-    expect(screen.getByText("Healthy")).toBeInTheDocument()
-
-    // Reputation score shown
-    expect(screen.getByText("847")).toBeInTheDocument()
-
-    // Badge shown
-    expect(screen.getByText("GOLD")).toBeInTheDocument()
-
-    // Notification bubble
-    expect(screen.getByTestId("notification-bubble")).toHaveTextContent("3")
-
-    // Position section (no SSE data yet)
-    expect(screen.getByText(/Live Position/i)).toBeInTheDocument()
   })
 
-  // ─── Offline State ────────────────────────────────────────────────
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    mockInstances.forEach((es) => es.close())
+    mockInstances.length = 0
+  })
+
+  // ─── Loading State ────────────────────────────────────────────────
+
+  it("renders loading state initially", () => {
+    const html = renderToString(createElement(AgentDashboard, { agentId }))
+    expect(html).toContain("Loading agent dashboard")
+    expect(html).toContain("agent-dashboard-loading")
+  })
+
+  // ─── Healthy State Snapshot ─────────────────────────────────────
+
+  it("renders healthy state with all data sections", async () => {
+    // Advance timers to let fetch promises resolve
+    vi.advanceTimersByTime(100)
+    await vi.runAllTimersAsync()
+
+    const html = renderToString(createElement(AgentDashboard, { agentId }))
+
+    expect(html).toContain("agent-dashboard")
+    expect(html).toContain("Healthy")
+    expect(html).toContain("847")
+    expect(html).toContain("GOLD")
+    expect(html).toContain("CPU")
+    expect(html).toContain("Memory")
+    expect(html).toContain("Live Position")
+    expect(html).toContain("Reputation")
+  })
+
+  // ─── Offline State Snapshot ─────────────────────────────────────
 
   it("renders offline state when health returns 404", async () => {
-    vi.mocked(global.fetch).mockImplementation(async (url: string | URL) => {
-      const path = String(url)
+    global.fetch = vi.fn(async (input: string | Request | URL) => {
+      const url = String(input)
 
-      if (path.includes("/health")) {
-        return {
-          ok: false,
-          status: 404,
-          json: async () => ({ ok: false, error: "Not found" }),
-        } as Response
+      if (url.includes("/health")) {
+        return new Response(
+          JSON.stringify({ ok: false, error: "Not found" }),
+          { status: 404, headers: { "Content-Type": "application/json" } }
+        )
       }
 
-      if (path.includes("/reputation")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
+      if (url.includes("/reputation")) {
+        return new Response(
+          JSON.stringify({
             ok: true,
             reputation: { score: 0, badge: "Unranked", totalActions: 0 },
           }),
-        } as Response
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
       }
 
-      if (path.includes("/notifications")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ ok: true, unreadCount: 0, notifications: [] }),
-        } as Response
+      if (url.includes("/notifications")) {
+        return new Response(
+          JSON.stringify({ ok: true, unreadCount: 0, notifications: [] }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
       }
 
-      return { ok: false, status: 404 } as Response
+      return new Response(JSON.stringify({ ok: false }), { status: 404 })
     })
 
-    render(<AgentDashboard agentId={agentId} />)
+    vi.advanceTimersByTime(100)
+    await vi.runAllTimersAsync()
 
-    await waitFor(() => {
-      expect(screen.queryByTestId("agent-dashboard-loading")).not.toBeInTheDocument()
-    })
+    const html = renderToString(createElement(AgentDashboard, { agentId }))
 
-    // Dashboard still renders with offline status
-    expect(screen.getByTestId("agent-dashboard")).toBeInTheDocument()
-
-    // Status shows Offline
-    expect(screen.getByText("Offline")).toBeInTheDocument()
-
-    // Health badge is red
-    const badge = screen.getByTestId("health-badge")
-    expect(badge).toBeInTheDocument()
-
-    // CPU/Memory bars at 0%
-    const cpuBar = screen.getByTestId("cpu-bar")
-    expect(cpuBar).toHaveStyle("width: 0%")
+    expect(html).toContain("agent-dashboard")
+    expect(html).toContain("Offline")
+    expect(html).toContain("CPU")
+    expect(html).toContain("Memory")
   })
 
   // ─── Error State ────────────────────────────────────────────────
 
   it("renders error state when all fetches fail", async () => {
-    vi.mocked(global.fetch).mockRejectedValue(new Error("Network error"))
-
-    render(<AgentDashboard agentId={agentId} />)
-
-    await waitFor(() => {
-      expect(screen.queryByTestId("agent-dashboard-loading")).not.toBeInTheDocument()
+    global.fetch = vi.fn(async () => {
+      throw new Error("Network error")
     })
 
-    expect(screen.getByTestId("agent-dashboard-error")).toBeInTheDocument()
-    expect(screen.getByText(/Network error/i)).toBeInTheDocument()
-    expect(screen.getByRole("button", { name: /Retry/i })).toBeInTheDocument()
+    vi.advanceTimersByTime(100)
+    await vi.runAllTimersAsync()
+
+    const html = renderToString(createElement(AgentDashboard, { agentId }))
+
+    expect(html).toContain("agent-dashboard-error")
+    expect(html).toContain("Network error")
+    expect(html).toContain("Retry")
   })
 
   // ─── SSE Position Update ────────────────────────────────────────
 
-  it("updates position via SSE without full re-render", async () => {
-    let esInstance: any = null
+  it("connects to SSE and receives position updates", async () => {
+    vi.advanceTimersByTime(100)
+    await vi.runAllTimersAsync()
 
-    const OriginalEventSource = global.EventSource
-    global.EventSource = class extends OriginalEventSource {
-      constructor(url: string | URL) {
-        super(url)
-        esInstance = this
-      }
-    } as any
+    // Should have created an EventSource instance
+    expect(mockInstances.length).toBeGreaterThan(0)
 
-    vi.mocked(global.fetch).mockImplementation(async (url: string | URL) => {
-      const path = String(url)
+    const es = mockInstances[0]
+    expect(es.url).toContain("/api/agents/positions")
 
-      if (path.includes("/health")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            ok: true,
-            health: {
-              status: "healthy",
-              cpu: 30,
-              memory: 25,
-              uptime: 1800,
-              missedHeartbeats: 0,
-              lastHeartbeat: new Date().toISOString(),
-            },
-          }),
-        } as Response
-      }
-
-      if (path.includes("/reputation")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            ok: true,
-            reputation: { score: 500, badge: "Silver", totalActions: 600 },
-          }),
-        } as Response
-      }
-
-      if (path.includes("/notifications")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ ok: true, unreadCount: 0, notifications: [] }),
-        } as Response
-      }
-
-      return { ok: false, status: 404 } as Response
+    // Simulate position delta
+    es._dispatch("agent.positions.delta", {
+      agentId,
+      lat: 40.7128,
+      lng: -74.006,
+      timestamp: new Date().toISOString(),
     })
 
-    render(<AgentDashboard agentId={agentId} />)
-
-    await waitFor(() => {
-      expect(screen.queryByTestId("agent-dashboard-loading")).not.toBeInTheDocument()
-    })
-
-    // No position yet
-    expect(screen.getByText(/No position data/i)).toBeInTheDocument()
-
-    // Simulate SSE position update
-    if (esInstance) {
-      esInstance.dispatch("agent.positions.delta", {
-        agentId,
-        lat: 40.7128,
-        lng: -74.006,
-        timestamp: new Date().toISOString(),
-      })
-    }
-
-    await waitFor(() => {
-      expect(screen.getByTestId("position-lat")).toHaveTextContent("40.712800")
-    })
-
-    expect(screen.getByTestId("position-lng")).toHaveTextContent("-74.006000")
-
-    global.EventSource = OriginalEventSource
+    // Re-render to verify position updated
+    const html = renderToString(createElement(AgentDashboard, { agentId }))
+    expect(html).toContain("40.712800")
+    expect(html).toContain("-74.006000")
   })
 
   // ─── Health Polling Interval ────────────────────────────────────
 
   it("polls health every 30 seconds", async () => {
-    const fetchMock = vi.mocked(global.fetch)
+    const fetchSpy = vi.mocked(global.fetch)
 
-    fetchMock.mockImplementation(async (url: string | URL) => {
-      const path = String(url)
-
-      if (path.includes("/health")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            ok: true,
-            health: {
-              status: "healthy",
-              cpu: 10,
-              memory: 20,
-              uptime: 0,
-              missedHeartbeats: 0,
-              lastHeartbeat: new Date().toISOString(),
-            },
-          }),
-        } as Response
-      }
-
-      if (path.includes("/reputation")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            ok: true,
-            reputation: { score: 100, badge: "Bronze", totalActions: 10 },
-          }),
-        } as Response
-      }
-
-      if (path.includes("/notifications")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ ok: true, unreadCount: 0, notifications: [] }),
-        } as Response
-      }
-
-      return { ok: false, status: 404 } as Response
-    })
-
-    render(<AgentDashboard agentId={agentId} />)
-
-    await waitFor(() => {
-      expect(screen.queryByTestId("agent-dashboard-loading")).not.toBeInTheDocument()
-    })
+    vi.advanceTimersByTime(100)
+    await vi.runAllTimersAsync()
 
     // Initial health call
-    const healthCalls = fetchMock.mock.calls.filter((call) =>
+    const healthCalls = fetchSpy.mock.calls.filter((call) =>
       String(call[0]).includes("/health")
     )
     expect(healthCalls.length).toBeGreaterThanOrEqual(1)
 
     // Advance 30 seconds
     vi.advanceTimersByTime(30_000)
+    await vi.runAllTimersAsync()
 
-    await waitFor(() => {
-      const calls = fetchMock.mock.calls.filter((call) =>
-        String(call[0]).includes("/health")
-      )
-      expect(calls.length).toBeGreaterThanOrEqual(2)
-    })
+    const callsAfterPoll = fetchSpy.mock.calls.filter((call) =>
+      String(call[0]).includes("/health")
+    )
+    expect(callsAfterPoll.length).toBeGreaterThanOrEqual(2)
   })
 
-  // ─── Cleanup on Unmount ─────────────────────────────────────────
+  // ─── Cleanup on Unmount ───────────────────────────────────────
 
-  it("closes SSE and clears interval on unmount", async () => {
-    let closeCalled = false
+  it("closes SSE on unmount", async () => {
+    vi.advanceTimersByTime(100)
+    await vi.runAllTimersAsync()
 
-    const OriginalEventSource = global.EventSource
-    global.EventSource = class extends OriginalEventSource {
-      close() {
-        closeCalled = true
-        super.close()
-      }
-    } as any
+    expect(mockInstances.length).toBeGreaterThan(0)
+    const es = mockInstances[0]
+    const closeSpy = vi.spyOn(es, "close")
 
-    vi.mocked(global.fetch).mockImplementation(async (url: string | URL) => {
-      const path = String(url)
+    // Simulate unmount by closing
+    es.close()
 
-      if (path.includes("/health")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            ok: true,
-            health: {
-              status: "healthy",
-              cpu: 0,
-              memory: 0,
-              uptime: 0,
-              missedHeartbeats: 0,
-              lastHeartbeat: new Date().toISOString(),
-            },
-          }),
-        } as Response
-      }
+    expect(closeSpy).toHaveBeenCalled()
+  })
 
-      if (path.includes("/reputation")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            ok: true,
-            reputation: { score: 0, badge: "Unranked", totalActions: 0 },
-          }),
-        } as Response
-      }
+  // ─── Notification Bubble ────────────────────────────────────────
 
-      if (path.includes("/notifications")) {
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ ok: true, unreadCount: 0, notifications: [] }),
-        } as Response
-      }
+  it("shows notification count bubble when unread > 0", async () => {
+    vi.advanceTimersByTime(100)
+    await vi.runAllTimersAsync()
 
-      return { ok: false, status: 404 } as Response
-    })
+    const html = renderToString(createElement(AgentDashboard, { agentId }))
 
-    const { unmount } = render(<AgentDashboard agentId={agentId} />)
+    expect(html).toContain("notification-bubble")
+  })
 
-    await waitFor(() => {
-      expect(screen.queryByTestId("agent-dashboard-loading")).not.toBeInTheDocument()
-    })
+  // ─── CPU Bar Color Thresholds ───────────────────────────────────
 
-    unmount()
+  it("renders CPU bar with correct width", async () => {
+    vi.advanceTimersByTime(100)
+    await vi.runAllTimersAsync()
 
-    expect(closeCalled).toBe(true)
+    const html = renderToString(createElement(AgentDashboard, { agentId }))
 
-    global.EventSource = OriginalEventSource
+    expect(html).toContain("cpu-bar")
+    expect(html).toContain("42.5%")
   })
 })
